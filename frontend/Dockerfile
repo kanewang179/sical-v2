@@ -14,7 +14,7 @@ RUN npm ci
 
 # 复制源代码
 COPY . .
-
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 # 构建应用
 RUN npm run build
 
