@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  base-tools:
+    image: base-tools:latest
+    container_name: base-tools-standalone
+    restart: unless-stopped
+    command: ["/bin/bash", "-c", "while true; do sleep 30; done"]
+    volumes:
+      # 挂载本地代码目录
+      - ../../../:/workspace
+      # Docker socket挂载，允许使用Docker
+      - /var/run/docker.sock:/var/run/docker.sock
+      # kubectl配置目录
+      - base_tools_kube:/root/.kube
+    environment:
+      # Docker配置
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    networks:
+      - base-tools-network
+    labels:
+      - "com.docker.compose.project=sical-v2-base-tools"
+      - "com.docker.compose.service=base-tools"
+
+volumes:
+  base_tools_kube:
+    driver: local
+    labels:
+      - "com.docker.compose.project=sical-v2-base-tools"
+      - "com.docker.compose.volume=base-tools-kube"
+
+networks:
+  base-tools-network:
+    driver: bridge
+    labels:
+      - "com.docker.compose.project=sical-v2-base-tools"
+      - "com.docker.compose.network=base-tools-network"

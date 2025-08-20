@@ -1,0 +1,25 @@
+# Jenkins核心插件列表（简化版）
+# 基础核心插件
+build-timeout
+credentials-binding
+timestamper
+ws-cleanup
+
+# Git相关
+git
+
+# Pipeline相关
+workflow-aggregator
+workflow-job
+workflow-cps
+workflow-basic-steps
+workflow-durable-task-step
+workflow-scm-step
+workflow-support
+
+# Docker相关
+docker-workflow
+docker-commons
+
+# 报告相关
+junit

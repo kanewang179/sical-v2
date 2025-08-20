@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  sical-deploy:
+    image: sical-deploy:latest
+    container_name: sical-deploy
+    restart: unless-stopped
+    command: ["/usr/local/bin/jenkins-entrypoint.sh"]
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      # Jenkins数据持久化
+      - jenkins_home:/var/jenkins_home
+      # Docker socket挂载，允许Jenkins使用Docker
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 可选：挂载本地代码目录
+      - ../../../:/workspace
+    privileged: true
+    environment:
+      # Jenkins配置
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Xmx2g -Xms1g
+      # Docker配置
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    networks:
+      - jenkins-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/login || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - "com.docker.compose.project=sical-v2"
+      - "com.docker.compose.service=sical-deploy"
+
+volumes:
+  jenkins_home:
+    driver: local
+    labels:
+      - "com.docker.compose.project=sical-v2"
+      - "com.docker.compose.volume=jenkins-home"
+
+networks:
+  jenkins-network:
+    driver: bridge
+    labels:
+      - "com.docker.compose.project=sical-v2"
+      - "com.docker.compose.network=jenkins-network"
