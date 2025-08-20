@@ -10,12 +10,15 @@ COPY package*.json ./
 # 安装依赖（包括开发依赖，构建时需要）
 # 跳过Puppeteer的Chrome下载以避免网络问题
 ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 RUN npm ci
 
 # 复制源代码
 COPY . .
+
+# 设置环境变量并构建应用
 ENV PUPPETEER_SKIP_DOWNLOAD=true
-# 构建应用
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 RUN npm run build
 
 # 生产阶段 - 运行阶段
