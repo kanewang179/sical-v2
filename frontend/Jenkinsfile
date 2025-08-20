@@ -2,11 +2,11 @@ pipeline {
     agent any
     
     environment {
-        // Docker Registry配置
-        DOCKER_REGISTRY = 'localhost:5000'
+        // Docker Registry配置 - 使用Docker Hub或本地registry
+        DOCKER_REGISTRY = 'docker.io'
         IMAGE_NAME = 'sical-frontend'
         IMAGE_TAG = "${BUILD_NUMBER}"
-        FULL_IMAGE_NAME = "${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+        FULL_IMAGE_NAME = "${IMAGE_NAME}:${IMAGE_TAG}"
         
         // Kubernetes配置
         KUBECONFIG_CREDENTIAL_ID = 'kubeconfig'
@@ -132,29 +132,46 @@ CMD ["nginx", "-g", "daemon off;"]
 '''
                         }
                         
-                        // 构建镜像
-                        sh "docker build -t ${FULL_IMAGE_NAME} ."
-                        
-                        // 验证镜像
-                        sh "docker images | grep ${IMAGE_NAME}"
+                        // 将前端代码复制到base-tools容器并构建镜像
+                        sh '''
+                            # 将前端代码复制到base-tools容器
+                            docker cp . sical-base-tools:/tmp/frontend
+                            
+                            # 在base-tools容器中构建镜像
+                            docker exec sical-base-tools bash -c "
+                                cd /tmp/frontend
+                                docker build -t ${FULL_IMAGE_NAME} .
+                                echo '镜像构建完成: ${FULL_IMAGE_NAME}'
+                            "
+                            
+                            # 验证镜像
+                            docker exec sical-base-tools bash -c "docker images | grep ${IMAGE_NAME}"
+                        '''
                     }
                 }
             }
         }
         
-        stage('推送镜像') {
+        stage('镜像处理') {
             steps {
-                echo "推送镜像到Registry: ${DOCKER_REGISTRY}"
+                echo "处理Docker镜像: ${FULL_IMAGE_NAME}"
                 script {
-                    sh "docker push ${FULL_IMAGE_NAME}"
-                    
-                    // 标记latest版本（仅主分支）
-                    if (env.GIT_BRANCH == 'main' || env.GIT_BRANCH == 'master') {
-                        sh "docker tag ${FULL_IMAGE_NAME} ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest"
-                        sh "docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest"
-                    }
-                    
-                    echo "镜像推送完成: ${FULL_IMAGE_NAME}"
+                    // 由于我们使用本地Kubernetes集群，需要将镜像导入到kind集群中
+                    sh '''
+                        # 在base-tools容器中保存镜像并导入到kind集群
+                        docker exec sical-base-tools bash -c "
+                            # 保存镜像到tar文件
+                            docker save ${FULL_IMAGE_NAME} -o /tmp/frontend-image.tar
+                            
+                            # 将镜像加载到kind集群
+                            kind load image-archive /tmp/frontend-image.tar --name sical-cluster
+                            
+                            # 清理临时文件
+                            rm -f /tmp/frontend-image.tar
+                        "
+                        
+                        echo "镜像已导入到Kubernetes集群: ${FULL_IMAGE_NAME}"
+                    '''
                 }
             }
         }
@@ -187,6 +204,7 @@ spec:
       containers:
       - name: frontend
         image: ${FULL_IMAGE_NAME}
+        imagePullPolicy: Never
         ports:
         - containerPort: 80
           name: http
@@ -253,9 +271,13 @@ spec:
                     // 写入临时文件
                     writeFile file: 'k8s-deployment.yaml', text: k8sManifest
                     
-                    // 使用kubectl部署
-                    withCredentials([kubeconfigFile(credentialsId: KUBECONFIG_CREDENTIAL_ID, variable: 'KUBECONFIG')]) {
-                        sh '''
+                    // 使用kubectl部署 - 通过base-tools容器执行
+                    sh '''
+                        # 将k8s配置文件复制到base-tools容器
+                        docker cp k8s-deployment.yaml sical-base-tools:/tmp/k8s-deployment.yaml
+                        
+                        # 在base-tools容器中执行kubectl命令
+                        docker exec sical-base-tools bash -c "
                             # 验证kubectl连接
                             kubectl cluster-info
                             
@@ -263,7 +285,7 @@ spec:
                             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
                             
                             # 应用部署配置
-                            kubectl apply -f k8s-deployment.yaml
+                            kubectl apply -f /tmp/k8s-deployment.yaml
                             
                             # 等待部署完成
                             kubectl rollout status deployment/sical-frontend -n ${NAMESPACE} --timeout=300s
@@ -272,8 +294,8 @@ spec:
                             kubectl get pods -n ${NAMESPACE} -l app=sical-frontend
                             kubectl get services -n ${NAMESPACE} -l app=sical-frontend
                             kubectl get ingress -n ${NAMESPACE}
-                        '''
-                    }
+                        "
+                    '''
                 }
             }
         }
@@ -282,31 +304,30 @@ spec:
             steps {
                 echo '验证部署状态...'
                 script {
-                    withCredentials([kubeconfigFile(credentialsId: KUBECONFIG_CREDENTIAL_ID, variable: 'KUBECONFIG')]) {
-                        sh '''
+                    sh '''
+                        # 在base-tools容器中执行验证命令
+                        docker exec sical-base-tools bash -c "
                             # 检查Pod状态
-                            echo "=== Pod状态 ==="
+                            echo '=== Pod状态 ==='
                             kubectl get pods -n ${NAMESPACE} -l app=sical-frontend -o wide
                             
                             # 检查Service状态
-                            echo "=== Service状态 ==="
+                            echo '=== Service状态 ==='
                             kubectl get svc -n ${NAMESPACE} -l app=sical-frontend
                             
                             # 检查Ingress状态
-                            echo "=== Ingress状态 ==="
+                            echo '=== Ingress状态 ==='
                             kubectl get ingress -n ${NAMESPACE}
                             
                             # 获取应用日志
-                            echo "=== 应用日志 ==="
+                            echo '=== 应用日志 ==='
                             kubectl logs -n ${NAMESPACE} -l app=sical-frontend --tail=20 || true
                             
-                            # 端口转发测试（后台运行）
-                            echo "=== 连接测试 ==="
-                            timeout 10s kubectl port-forward -n ${NAMESPACE} svc/sical-frontend-service 8081:80 &
-                            sleep 5
-                            curl -f http://localhost:8081/ || echo "连接测试失败，但部署可能仍然成功"
-                        '''
-                    }
+                            # 检查部署状态
+                            echo '=== 部署状态 ==='
+                            kubectl describe deployment sical-frontend -n ${NAMESPACE}
+                        "
+                    '''
                 }
             }
         }
@@ -320,10 +341,12 @@ spec:
             script {
                 try {
                     sh '''
-                        # 清理旧的镜像（保留最新5个版本）
-                        docker images ${DOCKER_REGISTRY}/${IMAGE_NAME} --format "table {{.Tag}}\t{{.ID}}" | 
-                        tail -n +2 | sort -nr | tail -n +6 | awk '{print $2}' | 
-                        xargs -r docker rmi || true
+                        # 通过base-tools容器清理旧的镜像（保留最新5个版本）
+                        docker exec sical-base-tools bash -c "
+                            docker images ${IMAGE_NAME} --format 'table {{.Tag}}\t{{.ID}}' | 
+                            tail -n +2 | sort -nr | tail -n +6 | awk '{print \$2}' | 
+                            xargs -r docker rmi || true
+                        " || true
                     '''
                 } catch (Exception e) {
                     echo "清理Docker镜像时出现错误: ${e.getMessage()}"
@@ -364,14 +387,16 @@ spec:
                     sh '''
                         echo "=== 构建失败信息收集 ==="
                         
-                        # Docker信息
+                        # Docker信息 - 通过base-tools容器执行
                         echo "Docker镜像:"
-                        docker images | grep ${IMAGE_NAME} || true
+                        docker exec sical-base-tools bash -c "docker images | grep ${IMAGE_NAME}" || true
                         
-                        # Kubernetes状态
+                        # Kubernetes状态 - 通过base-tools容器执行
                         echo "Kubernetes状态:"
-                        kubectl get pods -n ${NAMESPACE} -l app=sical-frontend || true
-                        kubectl describe pods -n ${NAMESPACE} -l app=sical-frontend || true
+                        docker exec sical-base-tools bash -c "
+                            kubectl get pods -n ${NAMESPACE} -l app=sical-frontend || true
+                            kubectl describe pods -n ${NAMESPACE} -l app=sical-frontend || true
+                        " || true
                     '''
                 } catch (Exception e) {
                     echo "收集错误信息失败: ${e.getMessage()}"

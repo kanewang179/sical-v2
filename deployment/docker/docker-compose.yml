@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  # Base Tools服务 - 包含Kubernetes工具
+  base-tools:
+    build:
+      context: ./base-tools
+      dockerfile: Dockerfile
+    image: sical-base-tools:latest
+    container_name: sical-base-tools
+    privileged: true
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./workspace:/workspace
+      - /lib/modules:/lib/modules:ro
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+
+  # Jenkins服务 - 使用官方镜像
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: sical-jenkins
+    depends_on:
+      - base-tools
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - jenkins-data:/var/jenkins_home
+      - ./workspace:/workspace
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Djava.net.preferIPv4Stack=true -Djava.net.preferIPv6Addresses=false
+      - JENKINS_OPTS=--httpPort=8080 --httpListenAddress=0.0.0.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/login"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  jenkins-data:
+    driver: local
+
+networks:
+  sical-network:
+    driver: bridge

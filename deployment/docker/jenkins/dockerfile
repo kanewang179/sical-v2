@@ -1,26 +1,27 @@
-# Base Tools镜像 - 包含常用的Kubernetes工具
-# 用于减少重复下载，提高构建效率
-FROM alpine:3.18
+# Jenkins镜像 - 基于官方Jenkins镜像并添加base-tools工具
+# 使用官方Jenkins镜像作为基础
+FROM jenkins/jenkins:lts-alpine
 
-# 配置Alpine国内镜像源
+# 切换到root用户进行工具安装
+USER root
+
+# 配置Alpine镜像源
 RUN echo 'https://mirrors.aliyun.com/alpine/v3.18/main' > /etc/apk/repositories && \
     echo 'https://mirrors.aliyun.com/alpine/v3.18/community' >> /etc/apk/repositories
 
-# 安装基础工具
-RUN apk add --no-cache \
+# 安装base-tools中的工具
+RUN apk update && apk add --no-cache \
     curl \
     wget \
     bash \
     git \
     jq \
-    yq \
     unzip \
-    tar \
-    gzip \
     python3 \
+    docker \
     && rm -rf /var/cache/apk/*
 
-# 设置镜像源环境变量（硬编码）
+# 设置镜像源环境变量
 ENV ALPINE_MIRROR=https://mirrors.aliyun.com/alpine \
     DOCKER_MIRROR=https://registry.cn-hangzhou.aliyuncs.com \
     GITHUB_MIRROR=https://ghproxy.com \
@@ -38,7 +39,7 @@ RUN echo "Installing tools for linux/amd64 architecture" && \
     cp /tmp/kubectl /usr/local/bin/kubectl && \
     chmod +x /usr/local/bin/kubectl
 
-# 安装 Helm
+# 安装 Helm (使用官方源)
 RUN echo "下载 helm..." && \
     curl -fsSL "https://get.helm.sh/helm-v3.17.4-linux-amd64.tar.gz" | tar -xz && \
     mv linux-amd64/helm /usr/local/bin/helm && \
@@ -55,10 +56,6 @@ RUN echo "下载 kind..." && \
     chmod +x ./kind && \
     mv ./kind /usr/local/bin/kind
 
-# 安装 Docker 客户端
-RUN echo "安装 Docker 客户端..." && \
-    apk add --no-cache docker-cli
-
 # 安装 docker-compose (使用DaoCloud镜像源)
 RUN echo "下载 docker-compose..." && \
     curl -L "https://files.m.daocloud.io/github.com/docker/compose/releases/download/v2.21.0/docker-compose-linux-$(uname -m)" -o /usr/local/bin/docker-compose && \
@@ -70,8 +67,22 @@ RUN kubectl version --client && \
     kustomize version && \
     kind version
 
-# 设置工作目录
-WORKDIR /workspace
+# 复制Jenkins配置文件
+COPY init.groovy /usr/share/jenkins/ref/init.groovy.d/
+COPY jenkins-plugin-mirror.groovy /usr/share/jenkins/ref/init.groovy.d/
+COPY plugins.txt /usr/share/jenkins/ref/plugins.txt
 
-# 默认启动bash
-CMD ["/bin/bash"]
+# 复制Jenkins启动脚本
+COPY jenkins-entrypoint.sh /usr/local/bin/jenkins-entrypoint.sh
+COPY jenkins-init-kubectl.sh /usr/local/bin/jenkins-init-kubectl.sh
+RUN chmod +x /usr/local/bin/jenkins-entrypoint.sh /usr/local/bin/jenkins-init-kubectl.sh
+
+# 跳过Jenkins插件安装，启动后手动安装
+# RUN jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
+RUN echo "跳过插件安装，Jenkins启动后可通过Web界面安装插件"
+
+# 切换到jenkins用户
+USER jenkins
+
+# 启动命令
+CMD ["/usr/local/bin/jenkins-entrypoint.sh"]
