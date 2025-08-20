@@ -19,6 +19,8 @@ RUN apk update && apk add --no-cache \
     unzip \
     python3 \
     docker \
+    nodejs \
+    npm \
     && rm -rf /var/cache/apk/*
 
 # 设置镜像源环境变量

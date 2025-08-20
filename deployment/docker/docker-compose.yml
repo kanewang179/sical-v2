@@ -20,9 +20,12 @@ services:
     environment:
       - DOCKER_HOST=unix:///var/run/docker.sock
 
-  # Jenkins服务 - 使用官方镜像
+  # Jenkins服务 - 使用自定义镜像
   jenkins:
-    image: jenkins/jenkins:lts
+    build:
+      context: ./jenkins
+      dockerfile: Dockerfile
+    image: sical-jenkins:latest
     container_name: sical-jenkins
     depends_on:
       - base-tools
