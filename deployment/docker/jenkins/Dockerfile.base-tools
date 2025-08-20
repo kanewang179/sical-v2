@@ -1,0 +1,111 @@
+# Jenkins镜像基于base-tools构建
+# 复用base-tools中的kubectl、helm、kind等工具
+ARG DOCKER_HUB_PROXY=docker.m.daocloud.io
+ARG BASE_TOOLS_IMAGE=base-tools:latest
+
+# 第一阶段：从base-tools镜像复制工具
+FROM ${BASE_TOOLS_IMAGE} as tools
+
+# 第二阶段：构建Jenkins镜像
+FROM ${DOCKER_HUB_PROXY}/jenkins/jenkins:lts
+
+# 切换到root用户安装工具
+USER root
+
+# 定义镜像源变量
+# 从mirrors.json读取镜像源配置
+COPY deployment/mirrors.json /tmp/mirrors.json
+COPY deployment/docker/read-mirrors.sh /tmp/read-mirrors.sh
+RUN chmod +x /tmp/read-mirrors.sh && \
+    . /tmp/read-mirrors.sh && \
+    echo "DEBIAN_MIRROR=${DEBIAN_MIRROR}" >> /tmp/mirrors.env && \
+    echo "DEBIAN_SECURITY_MIRROR=${DEBIAN_SECURITY_MIRROR}" >> /tmp/mirrors.env && \
+    echo "DOCKER_CE_MIRROR=${DOCKER_CE_MIRROR}" >> /tmp/mirrors.env && \
+    echo "DOCKER_HUB_PROXY=${DOCKER_HUB_PROXY}" >> /tmp/mirrors.env && \
+    echo "KUBERNETES_OSS_REPO=${KUBERNETES_OSS}" >> /tmp/mirrors.env && \
+    echo "GITHUB_PROXY=${GITHUB_PROXY}" >> /tmp/mirrors.env && \
+    echo "HELM_REPO=${HELM_REPOSITORY}" >> /tmp/mirrors.env && \
+    echo "NODEJS_MIRROR=${NODEJS_MIRROR}" >> /tmp/mirrors.env && \
+    echo "JENKINS_UPDATE_CENTER=${JENKINS_UPDATE_CENTER}" >> /tmp/mirrors.env
+
+# 从环境文件读取变量
+RUN . /tmp/mirrors.env && \
+    export DEBIAN_MIRROR && \
+    export DEBIAN_SECURITY_MIRROR
+
+# 配置国内镜像源加速下载
+RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources || \
+    (echo "deb ${DEBIAN_MIRROR}/ bookworm main" > /etc/apt/sources.list && \
+     echo "deb ${DEBIAN_MIRROR}/ bookworm-updates main" >> /etc/apt/sources.list && \
+     echo "deb ${DEBIAN_SECURITY_MIRROR}/ bookworm-security main" >> /etc/apt/sources.list)
+
+# 安装必要的工具
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    git \
+    unzip \
+    apt-transport-https \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Docker CE CLI (使用阿里云镜像源)
+RUN curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://mirrors.aliyun.com/docker-ce/linux/debian $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# 从base-tools镜像复制预安装的工具
+COPY --from=tools /usr/local/bin/kubectl /usr/local/bin/kubectl
+COPY --from=tools /usr/local/bin/helm /usr/local/bin/helm
+COPY --from=tools /usr/local/bin/kind /usr/local/bin/kind
+COPY --from=tools /usr/local/bin/kustomize /usr/local/bin/kustomize
+COPY --from=tools /usr/local/bin/docker-compose /usr/local/bin/docker-compose
+
+# 安装Node.js和npm（使用NodeSource官方源）
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs
+
+# 创建Jenkins用户的.kube目录
+RUN mkdir -p /var/jenkins_home/.kube \
+    && chown jenkins:jenkins /var/jenkins_home/.kube
+
+# 将jenkins用户添加到docker组
+RUN groupadd -g 999 docker || true \
+    && usermod -aG docker jenkins
+
+# 复制初始化脚本
+COPY deployment/docker/jenkins/init.groovy /usr/share/jenkins/ref/init.groovy.d/
+
+# 复制插件列表
+COPY deployment/docker/jenkins/plugins.txt /usr/share/jenkins/ref/plugins.txt
+
+# 配置Jenkins插件国内镜像源
+RUN . /tmp/mirrors.env && \
+    mkdir -p /usr/share/jenkins/ref/updates && \
+    echo "{\"connectionCheckUrl\":\"${JENKINS_UPDATE_CENTER}/current/update-center.json\",\"id\":\"default\",\"url\":\"${JENKINS_UPDATE_CENTER}/current/update-center.json\"}" > /usr/share/jenkins/ref/updates/default.json
+
+# 安装插件（使用国内镜像源，添加详细日志）
+RUN set -x && \
+    echo "开始安装Jenkins插件..." && \
+    jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt --plugin-download-directory /usr/share/jenkins/ref/plugins --verbose && \
+    echo "Jenkins插件安装完成!"
+
+# 验证工具安装
+RUN kubectl version --client && \
+    helm version && \
+    kind version && \
+    docker --version
+
+# 切换回jenkins用户
+USER jenkins
+
+# 跳过初始设置向导
+ENV JAVA_OPTS="-Djenkins.install.runSetupWizard=false"
+
+# 暴露端口
+EXPOSE 8080 50000
